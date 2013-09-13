@@ -5,13 +5,13 @@ Tapioca is a pipeline for Illumina Casava 1.8 next-gen sequencing data.
 
 Dependencies
 ------------
-Casava 1.8 http://support.illumina.com/sequencing/sequencing_software/casava.ilmn
-Bowtie2 http://bowtie-bio.sourceforge.net/bowtie2/
-fqutils https://github.com/crowja/fqutils
-tpipe http://www.eurogaran.com/index.php/es/component/remository/tpipe/ (also see Unix Power Tools http://shop.oreilly.com/product/9780596003302.do)
-Make, gzip, just standard Linux utilties
-Perl5 http://perl.org
-Perl modules (many of which are already in your perl distro) 
+* Casava 1.8 http://support.illumina.com/sequencing/sequencing_software/casava.ilmn
+* Bowtie2 http://bowtie-bio.sourceforge.net/bowtie2/
+* fqutils https://github.com/crowja/fqutils
+* tpipe http://www.eurogaran.com/index.php/es/component/remository/tpipe/ (also see Unix Power Tools http://shop.oreilly.com/product/9780596003302.do)
+* Make, gzip, just standard Linux utilties
+* Perl5 http://perl.org
+* Perl modules (many of which are already in your perl distro) 
 ```perl
 Bio::SeqReader::Fastq;
 Cwd;
@@ -27,7 +27,6 @@ Readonly;
 Term::ANSIColor;
 XML::Simple;
 ```
-
 Setup
 -----
 In addition to the software dependencies, you'll ned
@@ -82,11 +81,13 @@ tap_configure_postprocessing \
  --contam-other-pct 20 \
  --deployed /your/deployed/dir \
  ./Unaligned
+ 
 ```
 the makefile was created.
 
 * First run the precheck target; it does some sanity checking on the casava run
 and will output some warnings if it notices anything wrong off the bat.
+
 ```bash
 make precheck
 ```
@@ -94,6 +95,7 @@ make precheck
 * making the 'all' target will perform the contaminant filtering and  summary
 reporting. Technically it is not 'all' because the deploy step is   a separate
 target.
+
 ```bash
 make -j 16 all
 ```
@@ -102,7 +104,8 @@ a SGE cluster if more parallelism is required. qmake has note been tested.
 
 Now check results as necessary, in the various ./Project directories.
 
-* Run make deploy when ready:
+* Run make deploy when ready
+
 ```bash
 make deploy
 ```
