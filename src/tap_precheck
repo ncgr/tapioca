@@ -1,0 +1,137 @@
+#! /usr/bin/env perl
+
+# Tapioca
+# Copyright (C) 2013 National Center for Genome Resources - http://ncgr.org
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+use strict;
+use Getopt::Long;
+use Cwd;
+use File::Basename;
+use XML::Simple;
+use IO::Uncompress::Gunzip;
+
+my $_I_AM    = 'tap_precheck';
+my $_VERSION = '%BUNDLE_VERSION%';
+
+my $help_flag;
+my $strict_flag;
+my $verbosity = 0;
+my $version_flag;
+
+Getopt::Long::Configure( 'no_ignore_case', 'no_auto_abbrev' );
+Getopt::Long::GetOptions(
+    'help|h'     => \$help_flag,
+    'strict|s'   => \$strict_flag,
+    'verbose|V+' => \$verbosity,
+    'version|v'  => \$version_flag,
+);
+
+if ( $version_flag ) {
+    print "$_I_AM $_VERSION\n";
+    exit 0;
+}
+
+if ( $help_flag ) {
+    print <<_TEXT;
+Usage: $_I_AM [OPTIONS] infile
+Does all the things a good program ought to.
+
+Options:
+ -h, --help
+       Print this message and exit; specify --verbose for more.
+ -s, --strict
+       Treat warnings as fatal errors.
+ -V, --verbose
+       Increase the level of verbosity; multiples increase output.
+ -v, --version
+       Print the version information and exit.
+_TEXT
+
+    exit 0;
+}
+
+my $unaligned_dir = shift @ARGV;    # empty shift handled below
+
+# Check that $unaligned_dir exists
+die "[ERROR] $_I_AM: Need to specify path to Casava output directory (e.g., /path/to/Unaligned)\n"
+  if $unaligned_dir =~ /^\s*$/;
+die "[ERROR] $_I_AM: Casava Unaligned \"$unaligned_dir\" does not exist\n" if !-d $unaligned_dir;
+
+# Replace $unaligned_dir with its fully qualified name
+$unaligned_dir = Cwd::abs_path( $unaligned_dir );
+
+# Check for DemultiplexedBustardSummary.xml
+my $demuxsummary_xml = "$unaligned_dir/DemultiplexedBustardSummary.xml";
+die "[ERROR] $_I_AM: Cannot find \"DemultiplexedBustardSummary.xml\" in \"$unaligned_dir\"\n" if !-f $demuxsummary_xml;
+my $demux_info = XML::Simple::XMLin( $demuxsummary_xml );
+
+#print $demux_info->{ ChipSummary }->{ Machine } . "\n";
+
+
+# List of all sample dirs
+my @sample_dirs = glob "$unaligned_dir/Project_*/Sample_*/SampleSheet.csv";
+@sample_dirs = map { $_ = File::Basename::dirname( $_ ) } @sample_dirs;
+
+my $rc = 0;
+
+### Check for samples being present
+
+if ( @sample_dirs == 0 ) {
+    print STDERR "[WARNING] $_I_AM: No samples were found in \"$unaligned_dir\"\n";
+    $rc += 1 if $strict_flag;
+}
+
+### Check for zero content read files
+
+my @zeroreads_files;
+foreach my $d ( sort @sample_dirs ) {
+    my @read_files = glob "$d/*.fastq.gz";
+    foreach my $f ( @read_files ) {
+        print "Checking $f\n" if $verbosity > 0;
+        push @zeroreads_files, $f if -z $f;
+    }
+}
+
+if ( @zeroreads_files ) {
+    $rc += 1 if $strict_flag;
+    print STDERR "[WARNING] $_I_AM: Read files with no content are present\n";
+    foreach my $f ( @zeroreads_files ) {
+        print STDERR "$f\n";
+    }
+}
+
+### Ensure all fastq files have four-line records
+
+### Undetermined results from demultiplexing
+
+# commenting out this code which does nothing but print filenames to stdout.-agr
+
+# my @undetermineds_dirs = glob "$unaligned_dir/Undetermined_indices/Sample_*/SampleSheet.csv";
+# @undetermineds_dirs = map { $_ = File::Basename::dirname( $_ ) } @undetermineds_dirs;
+
+# foreach my $d ( sort @undetermineds_dirs ) {
+#     my @ufiles = glob "$d/*.fastq.gz";
+#     foreach my $f ( @ufiles ) {
+#       print "$f\n";
+#     }
+
+# }
+
+##### More preliminary tests can be added here #####
+
+exit $rc;

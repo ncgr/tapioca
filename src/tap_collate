@@ -1,0 +1,67 @@
+#!/usr/bin/env perl
+
+# Tapioca
+# Copyright (C) 2013 National Center for Genome Resources - http://ncgr.org
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+# tap_collate
+#
+# collate & gzip a set of files for deployment. insert a fqu_summary call into
+# the stream, only for fastq files. skip sets of empty files.
+
+use strict;
+use File::Basename;
+use Term::ANSIColor;
+
+my $target_path = shift @ARGV;
+my $src_files = "@ARGV";
+my $target_file = basename($target_path);
+
+# create parent dirs for the target_file, as necessary. this may appear very
+# redundant, but because we want to support parallel execution (make -j) avoid
+# race conditions on the directory creation in separate makefile recipes.
+
+my $target_dir = dirname($target_path);
+`mkdir -p $target_dir`;
+die('mkdir failed: $?') if $?;
+
+
+# check the 1st byte of all the concatenated files. dont collate, gzip, etc.
+# if these are empty .fq files. this might occur for example when the
+# samplesheet has 'unexpected' library indexes present for QC reasons.
+my $is_empty_fileset = `cat $src_files | head --bytes=1`;
+if($is_empty_fileset eq '') 
+{
+  warn colored ("warning: skipping empty fileset $src_files\n", 'yellow on_black');
+  exit(0);
+}
+
+# detect for fastq output filename. insert a tpipe into stream, which will
+# generate some  statistics about the fastq (like read counts)
+my $tpipe_stream = '';
+if ($target_file =~ /\.fq\.gz$/)
+{
+  `mkdir -p $target_dir/summary`;
+  die('mkdir failed: $?') if $?;
+  $tpipe_stream = "| tpipe 'fqu_summary | gzip --best > $target_dir/summary/$target_file.summary.gz'";
+}
+
+# finally, do the work- concatenate all the files, pipe them to gzip
+`cat $src_files $tpipe_stream | gzip --best > $target_path~`;
+die('stream failed: $?') if $?;
+
+rename("$target_path~", $target_path) || die("rename ~ failed: $target_path");

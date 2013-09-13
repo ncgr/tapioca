@@ -1,0 +1,12 @@
+README.md ./
+src/tap_barcode_analysis bin
+src/tap_collate bin
+src/tap_configure_postprocessing bin
+src/tap_contam_analysis bin
+src/tap_decontam.bash bin
+src/tap_failed_reads bin
+src/tap_precheck bin
+src/tap_qmake.bash bin
+src/tap_qsub.bash bin
+src/tap_splitq bin
+src/tap_yank bin

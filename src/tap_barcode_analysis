@@ -1,0 +1,131 @@
+#! /usr/bin/env perl
+
+# Tapioca
+# Copyright (C) 2013 National Center for Genome Resources - http://ncgr.org
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+use strict;
+use Getopt::Long;
+use IO::Uncompress::AnyUncompress;
+use Bio::SeqReader::Fastq;
+
+my $_I_AM    = 'tap_barcode_analysis';
+my $_VERSION = '%BUNDLE_VERSION%';
+
+sub _update_stats;
+my $count = 0;    # total reads examined
+my %counts;       # counts by barcode
+
+my $help_flag;
+my $max       = 20;
+my $verbosity = 0;
+my $version_flag;
+
+Getopt::Long::Configure( 'no_ignore_case', 'no_auto_abbrev' );
+Getopt::Long::GetOptions(
+    'help|h'     => \$help_flag,
+    'max|n=i'    => \$max,
+    'verbose|V+' => \$verbosity,
+    'version|v'  => \$version_flag,
+);
+
+if ( $version_flag ) {
+    print "$_I_AM $_VERSION\n";
+    exit 0;
+}
+
+if ( $help_flag ) {
+    print <<_TEXT;
+Usage: $_I_AM [OPTIONS] <in1> ...
+Report statistics for multiplexing barcodes.
+Options:
+ -h, --help
+       Print this message and exit; specify --verbose for more.
+ -n, --max <num>
+       Report only the top <num> most frequent barcodes [default: 20].
+ -V, --verbose
+       Increase the level of verbosity; multiples increase output.
+ -v, --version
+       Print the version information and exit.
+_TEXT
+
+    if ( $verbosity > 0 ) {
+        print <<_TEXT;
+
+$_I_AM is a great little program ...
+_TEXT
+    }
+
+    exit 0;
+}
+
+if ( @ARGV ) {
+    foreach my $fn ( @ARGV ) {
+
+        my $fh = new IO::Uncompress::AnyUncompress $fn;
+        my $in = new Bio::SeqReader::Fastq( fh => $fh );
+
+        while ( my $so = $in->next() ) {
+            my $h1 = $so->header1();
+            _update_stats( $h1 );
+        }
+    }
+}
+
+else {
+    my $in = new Bio::SeqReader::Fastq();
+
+    while ( my $so = $in->next() ) {
+        my $h1 = $so->header1();
+        _update_stats( $h1 );
+    }
+}
+
+foreach my $barcode ( keys %counts ) {    # prune anything appearing only once
+    delete $counts{ $barcode } if $counts{ $barcode } < 2;
+}
+
+my $i = 0;
+my @report;
+
+foreach my $barcode ( sort { $counts{ $b } <=> $counts{ $a } } keys %counts ) {
+    $i += 1;
+    last if $max > 0 && $i > $max;
+    push @report, $barcode, $counts{ $barcode };
+}
+
+print sprintf( "### tap_barcode_analysis report\n" );
+print sprintf( "### version %s\n", $_VERSION );
+print join( "\t", 'seqcount',       $count ) . "\n";
+print join( "\t", 'barcode_counts', @report ) . "\n";
+
+exit 0;
+
+
+sub _update_stats {
+    my $h1 = shift;
+
+    my @chunks = split( /\s+/, $h1 );
+
+    my @vals = split( /:/, $chunks[1] );
+    my $barcode = ( $vals[3] =~ /^\s*$/ ? 'NoIndex' : uc $vals[3] );
+
+    $count += 1;
+    $counts{ $barcode } += 1;
+}
+
+

@@ -1,0 +1,116 @@
+#! /usr/bin/env perl
+
+# Tapioca
+# Copyright (C) 2013 National Center for Genome Resources - http://ncgr.org
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+use strict;
+use Getopt::Long;
+use IO::Uncompress::AnyUncompress;
+use Bio::SeqReader::Fastq;
+
+my $_I_AM    = 'tap_yank';
+my $_VERSION = '%BUNDLE_VERSION%';
+
+my $help_flag;
+my $reverse_flag;
+my $verbosity = 0;
+my $version_flag;
+
+Getopt::Long::Configure( 'no_ignore_case', 'no_auto_abbrev' );
+Getopt::Long::GetOptions(
+    'help|h'     => \$help_flag,
+    'reverse|r'  => \$reverse_flag,
+    'verbose|V+' => \$verbosity,
+    'version|v'  => \$version_flag,
+);
+
+if ( $version_flag ) {
+    print "$_I_AM $_VERSION\n";
+    exit 0;
+}
+
+if ( $help_flag ) {
+    print <<_TEXT;
+Usage: cat infile.fastq | $_I_AM [OPTIONS] <id_file1>, ... Selects and prints
+reads based upon the labels specified collectively in the id_files. Each id_file
+contains single line records with sequence identifiers; ok if tab-delimited
+columns, the first column is used.
+
+Options:
+ -h, --help
+       Print this message and exit; specify --verbose for more.
+ -r, --reverse
+       Reverse the sense of selection. If --reverse is set, report reads *not*
+       in the id_lists.
+ -V, --verbose
+       Increase the level of verbosity; multiples increase output.
+ -v, --version
+       Print the version information and exit.
+_TEXT
+
+    if ( $verbosity > 0 ) {
+        print <<_TEXT;
+
+cat infile.fastq | $_I_AM y1.dat y2.dat
+cat infile.fastq.gz | $_I_AM y1.dat y2.dat
+_TEXT
+    }
+
+    exit 0;
+}
+
+my %flagged_ids;
+
+while ( @ARGV ) {
+    my $id_file = shift @ARGV;
+
+    if ( $id_file && -f $id_file ) {    # read the flagged ids if specified
+
+        open IN, $id_file;
+
+        while ( <IN> ) {
+            chomp;
+            next if /^\s*$/;
+            next if /^\s*#/;
+            s/^\s+//g;                  # remove leading whitespace
+            my @vals = split( /\s+/, $_ );
+
+            $flagged_ids{ $vals[0] } = 1;
+        }
+
+        close IN;
+    }
+}
+
+### Extract the requested records
+
+my $in = new Bio::SeqReader::Fastq( fh => \*STDIN );    # stdin
+
+while ( my $so = $in->next() ) {
+
+    my $id = $so->display_id();
+
+    if ( ( $reverse_flag && !exists $flagged_ids{ $id } ) || ( !$reverse_flag && exists $flagged_ids{ $id } ) ) {
+        my $h1 = $so->header1();
+        my $h2 = $so->header2();
+        my $s  = $so->seq();
+        my $q  = $so->quals();
+        print "\@$h1\n$s\n\+$h2\n$q\n";
+    }
+}
+

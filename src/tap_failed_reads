@@ -1,0 +1,40 @@
+#!/usr/bin/env perl
+
+# Tapioca
+# Copyright (C) 2013 National Center for Genome Resources - http://ncgr.org
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+# read from stdin and print the fastq read identifiers for casava 1.8 failed
+# reads: Y if the read failed filter (read is bad), N otherwise. for example
+#
+# @EAS139:136:FC706VJ:2:2104:15343:197393 1:Y:18:ATCACG
+#                                           ^ failed 
+#
+# See for background, the Casava configureBclToFastq.pl option
+# --with-failed-reads 
+#
+# Include failed reads into the FASTQ files (by default, only reads passing
+# filter are included).
+#
+# this could easily be a 1 liner with perl -n -e but the\\\escaping of regex etc
+# in a makefile is atrocious, so creating a  separate script.-agr
+
+use strict;
+
+while(<>) {
+  print "$1\n" if /^@(\S+)\s+\d\:Y\:/; # 1st match group is the read id
+}

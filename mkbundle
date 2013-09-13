@@ -1,0 +1,62 @@
+#! /bin/bash
+
+# Tapioca
+# Copyright (C) 2013 National Center for Genome Resources - http://ncgr.org
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+package_name=tapioca
+package_author_name="John A. Crow"
+package_author_email="jac_at_ncgr_dot_org"
+package_author_affiliation="National Center for Genome Resources"
+
+##########
+
+extra_tag=$1   # for example, specify "alpha" or "a" for alpha releases
+version=`date +'%Y%m%d'`${extra_tag}
+bundle=${package_name}-${version}
+
+rm -rf build
+mkdir -p build/${bundle}/bin
+chmod -R 775 build/${bundle}
+
+while read l
+do
+  tokens=( $l )
+  s=${tokens[0]}
+  d=${tokens[1]}
+  # Next line requires Bash's extended testing, [[...]]
+  if [ "$s" != "" ] && [ "$d" != "" ] && [[ "$s" != "#*" ]] && [ -f "$s" ]; then
+    name=`basename ${tokens[0]}`
+    mkdir -p build/${bundle}/$d
+    cat $s \
+       | sed -e"s/%BUNDLE_VERSION%/${version}/" \
+       | sed -e"s/%BUNDLE_NAME%/${bundle}/" \
+       | sed -e"s/%AUTHOR_NAME%/${package_author_name}/" \
+       | sed -e"s/%AUTHOR_EMAIL%/${package_author_email}/" \
+       | sed -e"s/%AUTHOR_AFFILIATION%/${package_author_affiliation}/" \
+       > build/${bundle}/${d}/$name    
+  fi
+done < MANIFEST
+
+if [ -d build/${bundle}/bin ] && [ "$(ls -A build/${bundle}/bin)" ]; then
+  chmod 775 build/${bundle}/bin/*
+fi
+
+
+cd build
+tar zcf ${bundle}.tgz $bundle
+

@@ -1,0 +1,686 @@
+#! /usr/bin/env perl
+
+# Tapioca
+# Copyright (C) 2013 National Center for Genome Resources - http://ncgr.org
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+#
+# see tap_configure_postprocessing --help
+#
+
+# Make cheat sheet: special bash and make variables use frequently here
+# see http://www.gnu.org/software/make/manual/make.html for details
+# $$? bash: exit code of last command. dont confuse with make's $? variable!
+# $?  make: the names of all the prerequisites that are newer than the target.
+# $@  make: the file name of the target of the rule.
+# $@~ make: actually just $@ with "~" appended to filename.
+# $^  make: the names of all the prerequisites, with spaces between them.
+# $+  make : This is like ‘$^’, but in explicit order.
+
+use strict;
+use Getopt::Long;
+use Cwd;
+use XML::Simple;
+use File::Which;
+use Readonly;
+use Term::ANSIColor;
+
+sub _get_my_mate;
+
+Readonly my $_I_AM    => 'tap_configure_postprocessing';
+Readonly my $_VERSION => '%BUNDLE_VERSION%';
+
+my $contam_other_index;
+my $contam_other_pct = 20;
+my $contam_phix_index;
+my $contam_phix_pct = 50;
+my $deployed_dir    = './Deployed';
+my $help_flag;
+my $unaligned_dir;
+my $verbosity = 0;
+my $version_flag;
+
+Getopt::Long::Configure( 'no_ignore_case', 'no_auto_abbrev' );
+Getopt::Long::GetOptions(
+  'contam-phix-pct=f'    => \$contam_phix_pct,
+  'contam-phix-index=s'  => \$contam_phix_index,
+  'contam-other-pct=f'   => \$contam_other_pct,
+  'contam-other-index=s' => \$contam_other_index,
+  'deployed|d=s'         => \$deployed_dir,
+  'help|h'               => \$help_flag,
+  'verbose|V+'           => \$verbosity,
+  'version|v'            => \$version_flag,
+  );
+
+if ( $version_flag ) {
+  print "$_I_AM $_VERSION\n";
+  exit 0;
+}
+
+if ( $help_flag ) {
+  print <<_TEXT;
+  Usage: $_I_AM [OPTIONS] <unaligned_dir>
+  Creates a makefile for Tapioca postprocessing of the Casava report in
+  <unaligned_dir>.
+
+  Options:
+  --contam-other-index=<name>
+  Specify <name> as the Bowtie2 index to be used for other contaminant analysis
+  [default: none].
+  --contam-other-pct=<pct>
+  Require at least <pct> percent of maximum total Bowtie2 (not paired) alignment
+  score to flag a read contaminated by "other-index" [default: 20].
+  --contam-phix-index=<name>
+  Specify <name> as the Bowtie2 index to be used for phi X contaminant analysis
+  [default: none].
+  --contam-phix-pct=<pct>
+  Require at least <pct> percent of maximum total Bowtie2 (not paired) alignment
+  score to flag a read contaminated by "phix-index" [default: 50].
+  -D, --deployed=<dirname>
+  Specify <dirname> as the deployment directory [default:
+  ./TapReport/Deployed].
+  -h, --help
+  Print this message and exit
+  -R, --report=<dirname>
+  Specify <dirname> as the Report directory [default: ./TapReport].
+  -V, --verbose
+  Increase the level of verbosity; multiples increase output.
+  -v, --version
+  Print the version information and exit.
+
+_TEXT
+
+  exit 0;
+}
+
+
+### Check for some required utilities
+
+foreach my $utility (('fqu_cull', 'zcat', 'gzip', 'tpipe'))
+{
+  die("[ERROR]: $_I_AM: '$utility' is missing from your PATH")
+   if (which($utility) eq '');
+}
+
+$unaligned_dir = shift @ARGV;    # empty shift handled below
+
+# Reality checks for the presence of the Casava output directory
+die "[ERROR] $_I_AM: Need to specify path to Casava output directory (e.g., /path/to/Unaligned)\n"
+if $unaligned_dir =~ /^\s*$/;
+die "[ERROR] $_I_AM: Casava Unaligned \"$unaligned_dir\" does not exist\n" if !-d $unaligned_dir;
+
+$unaligned_dir = Cwd::abs_path( $unaligned_dir );
+
+my $demuxsummary_xml = "$unaligned_dir/DemultiplexedBustardSummary.xml";
+die "[ERROR] $_I_AM: Cannot find \"DemultiplexedBustardSummary.xml\" in ".
+"\"$unaligned_dir\" (check if Casava pipeline finished!)\n"
+if !-f $demuxsummary_xml;
+
+my $demuxsummary_info = XML::Simple::XMLin( $demuxsummary_xml );
+my $casava_version    = $demuxsummary_info->{ Software };
+my $instrument_name   = $demuxsummary_info->{ ChipSummary }->{ Machine };
+my $runfolder_name    = $demuxsummary_info->{ ChipSummary }->{ RunFolder };
+
+$casava_version =~ s/^.*casava-//i;
+die "[ERROR] $_I_AM: Cannot determine CASAVA version from ".
+"\"DemultiplexedBustardSummary.xml\" in \"$unaligned_dir\"\n"
+if $casava_version =~ /^\s*$/;
+
+my $demuxconfig_xml = "$unaligned_dir/DemultiplexedBustardConfig.xml";
+die "[ERROR] $_I_AM: Cannot find \"DemultiplexedBustardConfig.xml\" in ".
+"\"$unaligned_dir\"\n" if !-f $demuxconfig_xml;
+
+my $demuxconfig_info = XML::Simple::XMLin( 
+  $demuxconfig_xml, 
+  ForceArray =>['Reads']);
+
+my $paired = (2 == scalar @{$demuxconfig_info->{Run}->{RunParameters}->{Reads}})
+  ? 1 : 0;
+
+my $rta_name         = $demuxconfig_info->{ Run }->{ Software }->{ Name };
+my $rta_version      = $demuxconfig_info->{ Run }->{ Software }->{ Version };
+die "[ERROR] $_I_AM: Cannot determine RTA version from ".
+"\"DemultiplexedBustardConfig.xml\" in \"$unaligned_dir\"\n"
+if ( ( uc $rta_name ne "RTA" ) || ( $rta_version =~ /^\s*$/ ) );
+
+### Generate the tags associated with correctly demultiplexed read files
+
+my %resolved_tags;
+
+foreach my $project_dir ( glob "$unaligned_dir/Project_*" ) {
+  my $project_name = File::Basename::basename( $project_dir );
+  foreach my $sample_dir ( glob "$project_dir/Sample_*" ) {
+    my $sample_name = File::Basename::basename( $sample_dir );
+    foreach my $read_file ( glob "$sample_dir/*.fastq.gz" ) {
+      my $name = File::Basename::basename( $read_file, '.fastq.gz' );
+      my $tag = "$project_name/$sample_name/$name";
+      $resolved_tags{ $tag } = 1;
+    }
+  }
+}
+
+### Generate the tags associated with read files with undetermined indices
+
+my %unresolved_tags;
+
+foreach my $samples_dir ( glob "$unaligned_dir/Undetermined_indices/Sample_*" ) {
+  my $sample_name = File::Basename::basename( $samples_dir );
+  foreach my $read_file ( glob "$samples_dir/*.fastq.gz" ) {
+    my $name = File::Basename::basename( $read_file, '.fastq.gz' );
+    my $tag = "$sample_name/$name";
+    $unresolved_tags{ $tag } = 1;
+  }
+}
+
+### for the targets collate, copy and symlink, operate at the sample
+### level not at the stepped/chunked level as everything has been up til now.
+### use the xml data produced by casava to find all the samples, 
+### instead of parsing/regex matching on the %resolved_tags.
+
+my $demux_config_xml = "$unaligned_dir/DemultiplexConfig.xml";
+
+die "[ERROR] $_I_AM: Cannot find \"DemultiplexConfig.xml\" in \"$unaligned_dir\"\n"
+ if !-f $demux_config_xml;
+
+my $demux_config = XML::Simple::XMLin( 
+  $demux_config_xml, 
+  ForceArray =>['Sample','Lane']);
+
+my $flowcell_info = $demux_config->{FlowcellInfo};
+my $flowcell_id = $flowcell_info->{ID};
+
+##### HERE BEGINNETH THE MAKEFILE CONTENT #####
+
+open OUT, ">makefile";
+
+### Create the makefile header
+
+print OUT <<_TEXT;
+### Tapioca makefile generated for \"$unaligned_dir\"
+
+SHELL = /bin/bash
+unaligned_dir      = $unaligned_dir
+deployed_dir       = $deployed_dir
+instrument_name    = $instrument_name
+runfolder_name     = $runfolder_name
+flowcell_id        = $flowcell_id
+paired             = $paired
+rta_version        = $rta_version
+casava_version     = $casava_version
+
+# non-file aka 'phony' targets
+.PHONY: all all-resolved all-unresolved precheck deploy deploy_collate deploy_symlink_metadata deploy_casava_report deploy_lims_update
+
+.SUFFIXES =
+
+_TEXT
+
+### Create the top level rules
+
+print OUT "\nall: all-resolved all-unresolved\n";
+
+print OUT "\nprecheck:\n";
+print OUT <<_RECIPE;
+\ttap_precheck --strict \$(unaligned_dir)
+
+_RECIPE
+
+### Write the rules for contaminant analysis
+
+
+# Rules for identifying phi X contaminated reads in correctly demultiplexed read files
+
+print OUT "\n# Rules for identifying phi X contaminated reads in correctly demultiplexed read files\n";
+foreach my $tag ( sort keys %resolved_tags ) {
+  print OUT "$tag-phix.contam_ids: \$(unaligned_dir)/$tag.fastq.gz\n";
+  if ( $contam_phix_index ) {    # rules
+    print OUT <<_RECIPE;
+\tmkdir -p `dirname \$@` || exit 1
+\ttap_contam_analysis --db $contam_phix_index --pct $contam_phix_pct  <( gunzip -c \$< ) > \$@~; \\
+\tif test \$\$? -eq 0; then mv \$@~ \$@; else exit 1; fi; \\
+\tsleep 1
+
+_RECIPE
+
+  }
+}
+
+# Rules for segregating phi X contaminated reads in correctly demultiplexed
+# read files
+
+print OUT "\n# Rules for segregating phi X contaminated reads in correctly demultiplexed read files\n";
+foreach my $tag ( sort keys %resolved_tags ) {
+  my $id_file1 = "$tag-phix.contam_ids";
+  my $mymate   = _get_my_mate( $tag, \%resolved_tags );
+  my $id_file2 = "$mymate-phix.contam_ids" if $mymate;
+  print OUT "$tag-with_phix.fq: \$(unaligned_dir)/$tag.fastq.gz $id_file1 $id_file2\n";
+  if ( $contam_phix_index ) {    # rules
+    print OUT <<_RECIPE;
+\tfqu_cull < \$+ > \$@~; \\
+\tif test \$\$? -eq 0; then mv \$@~ \$@; else exit 1; fi; \\
+\tsleep 1
+
+_RECIPE
+      print OUT "$tag-without_phix.fq: \$(unaligned_dir)/$tag.fastq.gz $id_file1 $id_file2\n";
+      print OUT <<_RECIPE;
+\tfqu_cull -r < \$+ > \$@~; \\
+\tif test \$\$? -eq 0; then mv \$@~ \$@; else exit 1; fi; \\
+\tsleep 1
+
+_RECIPE
+
+  }
+}
+
+# Rules for identifying other contaminated reads in correctly demultiplexed
+# read files
+
+print OUT "\n# Rules for identifying contaminated reads in correctly demultiplexed read files\n";
+foreach my $tag ( sort keys %resolved_tags ) {
+  print OUT "$tag-other.contam_ids: $tag-without_phix.fq\n";
+  if ( $contam_other_index ) {    # rules
+    print OUT <<_RECIPE;
+\tmkdir -p `dirname \$@` || exit 1
+\ttap_contam_analysis --db $contam_other_index --pct $contam_other_pct \$<  > \$@~; \\
+\tif test \$\$? -eq 0; then mv \$@~ \$@; else exit 1; fi; \\
+\tsleep 1
+
+_RECIPE
+
+  }
+}
+
+# Rules for segregating other contaminated reads in correctly demultiplexed
+# read files
+
+print OUT "\n# Rules for segregating other contaminated reads in correctly demultiplexed read files\n";
+foreach my $tag ( sort keys %resolved_tags ) {
+  my $id_file1 = "$tag-other.contam_ids";
+  my $mymate   = _get_my_mate( $tag, \%resolved_tags );
+  my $id_file2 = "$mymate-other.contam_ids" if $mymate;
+  print OUT "$tag-without_phix-with_other.fq: $tag-without_phix.fq $id_file1 $id_file2\n";
+  if ( $contam_phix_index ) {    # rules
+    print OUT <<_RECIPE;
+\tfqu_cull < \$+ > \$@~; \\
+\tif test \$\$? -eq 0; then mv \$@~ \$@; else exit 1; fi; \\
+\tsleep 1
+
+_RECIPE
+
+  # without_phix-without_other-casava-all bin includes both :Y: (failed) and :N:
+  # (passed) from Casava output
+  print OUT "\n# all-chastity bin includes both :Y: (failed) and :N: (passed) from Casava output\n";
+  print OUT "$tag-without_phix-without_other-casava-all.fq: $tag-without_phix.fq $id_file1 $id_file2\n";
+  print OUT <<_RECIPE;
+\tfqu_cull -r < \$+ > \$@~; \\
+\tif test \$\$? -eq 0; then mv \$@~ \$@; else exit 1; fi; \\
+\tsleep 1
+
+_RECIPE
+
+  # Rules for segregating casava passed/failed reads "If you want all reads in a
+  # FASTQfile,use the --with-failed-reads option." casava 1.8 manual
+  print OUT "\n# Rule for generating failed reads sequence identifiers (casava filtering)\n";
+  print OUT "$tag-casava_failed_ids: $tag-without_phix-without_other-casava-all.fq\n";
+  print OUT <<_RECIPE;
+\ttap_failed_reads < \$^ > \$@~ ; \\
+\tif test \$\$? -eq 0; then mv \$@~ \$@; else exit 1; fi; \\
+\tsleep 1
+_RECIPE
+
+  print OUT "\n# Rule for segregating *failed* reads bin (casava filtering)\n";
+  print OUT "$tag-without_phix-without_other-failed.fq: $tag-without_phix-without_other-casava-all.fq $tag-casava_failed_ids\n";
+  print OUT <<_RECIPE;
+\tfqu_cull < \$+ > \$@~ ; \\
+\tif test \$\$? -eq 0; then mv \$@~ \$@; else exit 1; fi; \\
+\tsleep 1
+_RECIPE
+
+  print OUT "\n# Rule for segregating *passed* reads bin (casava filtering)\n";
+  print OUT "$tag-without_phix-without_other.fq: $tag-without_phix-without_other-casava-all.fq $tag-casava_failed_ids\n";
+  print OUT <<_RECIPE;
+\tfqu_cull -r < \$+ > \$@~ ; \\
+\tif test \$\$? -eq 0; then mv \$@~ \$@; else exit 1; fi; \\
+\tsleep 1
+_RECIPE
+
+  }
+}
+
+### Write the rules for analysis of undetermined indices
+
+foreach my $tag ( sort keys %unresolved_tags ) {
+
+  print OUT "Undetermined_indices/$tag.fq: $unaligned_dir/Undetermined_indices/$tag.fastq.gz\n";
+    print OUT <<_RECIPE;
+\tmkdir -p `dirname \$@` || exit 1
+\tzcat \$+ > \$@~; \\
+\tif test \$\$? -eq 0; then mv \$@~ \$@; else exit 1; fi; \\
+\tsleep 1
+
+_RECIPE
+
+  print OUT "Undetermined_indices/$tag-barcodes.report: Undetermined_indices/$tag.fq\n";
+  print OUT <<_RECIPE;
+\tmkdir -p `dirname \$@` || exit 1
+\ttap_barcode_analysis \$+ > \$@~; \\
+\tif test \$\$? -eq 0; then mv \$@~ \$@; else exit 1; fi; \\
+\tsleep 1
+
+_RECIPE
+
+}
+
+### "all-resolved" target
+print OUT "\n# Set the all-resolved target\n";
+foreach my $tag ( sort keys %resolved_tags ) {
+  print OUT "all-resolved: $tag-without_phix-with_other.fq\n";
+  print OUT "all-resolved: $tag-with_phix.fq\n";
+  print OUT "all-resolved: $tag-without_phix-without_other.fq\n";
+  print OUT "all-resolved: $tag-without_phix-without_other-failed.fq\n";
+}
+
+### "all-unresolved" target
+
+print OUT "\n# Set the all-unresolved target\n";
+foreach my $tag ( sort keys %unresolved_tags ) {
+  print OUT "all-unresolved: Undetermined_indices/$tag.fq\n";
+  print OUT "all-unresolved: Undetermined_indices/$tag-barcodes.report\n";
+
+}
+
+### "collate" target
+
+# 1.8 BCL conversion output folder has each sample fastq file in chunks, the
+# number of chunks depending on the set size, based on the cluster count
+# paramter. We need to collate the fastq files for each sample. 
+# from the Casava manual:
+# "Set Size: The FASTQ files are divided in files with the file size set by the
+# --fastq-cluster-count command line option of configureBclToFastq.pl.The
+# different files are distinguished by the 0-padded 3-digit set number. TIP If
+# you need to generate one unique fastq gzipped file for use in a third-party
+# tool, you can set the --fastq-cluster-count option to -1"
+
+print OUT "\n# Set the deploy_collate targets\n";
+print OUT "# Collates the sets of fastq and contam reports for each sample.\n";
+print OUT "deploy_collate_files = \n";
+
+# all the file types we need to collate
+my @collate_suffixes = ();
+
+my @lanes = @{$flowcell_info->{Lane}};
+
+foreach my $lane (@lanes) 
+{
+  my $lane_num = $lane->{Number};
+  my @samples = @{$lane->{Sample}};
+
+  foreach my $sample (@samples) 
+  {
+    my $project = $sample->{ProjectId};
+    my $sample_id = $sample->{SampleId};
+    my $sample_path;
+
+    if($project =~ /undetermined/i) 
+    {
+      # for undetermined indices, samples unable to be demultiplexed, we are
+      # only producing a barcodes report, and fastq 
+      @collate_suffixes = ('-barcodes.report', '.fq');
+      $sample_path = sprintf("Undetermined_indices/Sample_lane%d", $lane_num);
+    }
+    else
+    {
+      # the various buckets created by previous tapioca make targets omitting
+      # without_phix because it's redundant, having the other two -without* bins
+      # as well -agr
+      @collate_suffixes = ('-with_phix.fq',
+        '-without_phix-with_other.fq',
+        '-without_phix-without_other.fq',
+        '-without_phix-without_other-failed.fq',
+        '-other.contam_ids',
+        '-phix.contam_ids'
+        );
+      $sample_path = sprintf("Project_%s/Sample_%s", $project, $sample_id);
+    }
+
+    # add sample files and collation suffixes to make recipe:
+    if($paired) 
+    {
+      foreach my $read (1..2) 
+      {
+        foreach my $suffix (@collate_suffixes)
+        {
+          my $subdir = subdir_for_deploy($project, $sample->{SampleId},$suffix);
+          my $dest_file = sprintf("%s/%s/%ss_%d_%d_sequence_%s%s.gz",
+            $deployed_dir, 
+            $runfolder_name, 
+            $subdir,
+            $lane_num, 
+            $read, 
+            $sample->{Index},
+            $suffix
+            );
+
+          # add this file to the collate target
+          print OUT "deploy_collate_files += $dest_file\n";
+
+          # add target for creating the sample file and list it's dependencies.
+          my $dependencies_wildcard = sprintf("%s/*_L%03d_R%d_*%s",
+            $sample_path, $lane_num, $read, $suffix);          
+
+          print OUT "$dest_file: $dependencies_wildcard\n";
+          print OUT <<_RECIPE;
+\ttap_collate \$@ \$^
+\tsleep 1
+
+_RECIPE
+        } # each suffix
+      } # each read 
+    } # paired
+  else # singleton
+  {
+    foreach my $suffix (@collate_suffixes)
+    {
+      my $subdir = subdir_for_deploy($project, $sample->{SampleId}, $suffix);
+      my $dest_file = sprintf("%s/%s/%ss_%d_sequence_%s%s.gz",
+        $deployed_dir, 
+        $runfolder_name, 
+        $subdir,
+        $lane_num, 
+        $sample->{Index},
+        $suffix
+        );
+
+      # add this file to the collate target
+      print OUT "deploy_collate_files += $dest_file\n";
+
+      # add target for creating the sample file and list it's dependencies.
+      my $dependencies_wildcard = sprintf("%s/*_L%03d_*%s",
+        $sample_path, $lane_num, $suffix);          
+
+      print OUT "$dest_file: $dependencies_wildcard\n";
+      print OUT <<_RECIPE;
+\ttap_collate \$@ \$^ || exit 1
+\tsleep 1
+_RECIPE
+
+      } # each suffix
+    } # paired / singleton
+
+  } # each sample
+
+  # foreach lane, collate the chunks of undetermined fastq files into the
+  # deployed dir.
+
+  if( $paired )
+  {
+
+  }
+  else
+  {
+    my $dest_file = sprintf("%s/%s/undetermined/s_%d_sequence_Undetermined.fastq.gz",
+      $deployed_dir,
+      $runfolder_name,
+      $lane_num);
+    #print OUT "$dest_file: "
+  }
+
+} # each lane
+
+### "deploy_lims_update" target
+# here is an example of a make recipe for updating your lims
+# after the collation is done
+
+# print OUT "# Set the 'deploy_lims_update' target.\n";
+# print OUT "# Update the lab information system with info about this run.\n";
+# print OUT "deploy_lims_update : | deploy_symlink_metadata deploy_casava_report deploy_lims_update_done.txt\n";
+# print OUT "deploy_lims_update_done.txt : | \$(deploy_collate_files)\n";
+# print OUT <<_RECIPE;
+# \tsource \$(grindstone_env) && export GRINDSTONE_DB=\$(grindstone_db) && tap_lims_update -r \$(runfolder_name) --rta-version \"\$(rta_version)\" --casava-version \"\$(casava_version)\" -d \"\$(deployed_dir)\"
+# \tif test \$\$? -eq 0; then touch \$@; else exit 1; fi
+# \tsleep 1
+#
+#_RECIPE
+
+### "deploy_symlink_metadata" target
+# print OUT "# Set the 'deploy_symlink_metadata' target\n";
+# print OUT "# Symlinks the run's metadata in deployed dir.\n";
+# print OUT "# i.e. project and sample names\n";
+# print OUT "deploy_symlink_metadata : | deploy_symlink_metadata_done.txt\n";
+# print OUT "deploy_symlink_metadata_done.txt : | \$(deploy_collate_files)\n";
+
+# print OUT <<_RECIPE;
+# \tsource \$(grindstone_env) && export GRINDSTONE_DB=\$(grindstone_db) && tap_deploy_symlinks -d \$(deployed_dir) -r \$(runfolder_name)
+# \tif test \$\$? -eq 0; then touch \$@; else exit 1; fi
+# \tsleep 1
+
+# _RECIPE
+
+### "deploy_casava_report"
+# here is an example of another make recipe for copying the casava report somewhere
+# print OUT "# Set the 'deploy_casava_report' target:\n";
+# print OUT "# casava creates html reports in Unaligned/Basecall_Stats_FLOWCELLID.\n";
+# print OUT "# we copy them to $SEQCTR_REPORTS_DIR\n";
+# print OUT "deploy_casava_report : | deploy_casava_report_done.txt\n";
+# print OUT "deploy_casava_report_done.txt : | \$(deploy_collate_files) \$(unaligned_dir)/Basecall_Stats_\$(flowcell_id)\n";
+
+# print OUT <<_RECIPE;
+# \tmkdir -p \$(seqctr_reports_dir)/\$(runfolder_name) || exit 1
+# \trsync -av \$(unaligned_dir)/Basecall_Stats_\$(flowcell_id) \$(seqctr_reports_dir)/\$(runfolder_name)
+# \tif test \$\$? -eq 0; then touch \$@; else exit 1; fi
+# \tsleep 1
+
+# _RECIPE
+
+### "deploy" target; 
+print OUT "# Set the 'deploy' target\n";
+
+#print OUT "deploy : \$(deploy_collate_files) deploy_symlink_metadata deploy_casava_report deploy_lims_update\n";
+
+print OUT "deploy : \$(deploy_collate_files)\n";
+print OUT "\t\$(info **** deploy finished ok! ****)\n\n";
+
+##### HERE ENDETH THE MAKEFILE CONTENT #####
+close OUT;
+
+print colored (<<_FINAL_INSTR, 'green on_black');
+
+makefile written! now use 'make' commands, e.g.:
+
+make precheck
+make -j 8 all
+make -j 8 deploy
+
+_FINAL_INSTR
+
+# Given a Casava 1.8.2 output fastq filename as well as a collection (as a Perl
+# hash) of output filenames, return the name of its mate if it exists in the
+# collection.
+
+sub _get_my_mate {
+  my ( $myname, $allnames ) = @_;
+
+=head1
+  print "MYNAME: $myname\n";
+  print "MYFRIENDS: " . join("\n", sort keys %$allnames) . "\n";
+  die;
+=cut
+
+  if ( $myname =~ /^(\S+)_R1_(\d+)$/ ) {
+    my $candidate = "$1_R2_$2";
+    return $candidate if exists $allnames->{ $candidate };
+  }
+
+  elsif ( $myname =~ /^(\S+)_R2_(\d+)$/ ) {
+    my $candidate = "$1_R1_$2";
+    return $candidate if exists $allnames->{ $candidate };
+  }
+
+  # No mate found ...
+}
+
+
+#
+# subdir_for_deploy
+#
+# decide what subdirectory to write into deploy/, depending on  the file
+# suffix, or other identifying info. the oddity of this subroutine is
+# indicative of the adhoc way we came up with the requirements for the tapioca
+# output.
+#
+sub subdir_for_deploy
+{
+  my ($project, $sample, $suffix) = @_;
+  my $subdir;
+
+  if($suffix =~ /\-failed\.fq/)
+  {
+    $subdir = 'failed';
+  }
+  elsif($sample =~/\_unexpected\_index\_/i)
+  {
+    $subdir = 'unexpected';
+  }
+  elsif($project =~ /undetermined/i)
+  {
+    $subdir = 'undetermined';
+  }
+  elsif($suffix =~ /without\_phix\-without\_other\.fq/)
+  {
+    # this should be the main result file of interest. dont write in a
+    # subdirectory, it may just confuse the downstream user.
+    $subdir = '';
+  }
+  else
+  {
+    # use the suffix as the basis for naming the subdir. this will keep the
+    # number of deployed files in the main deployed directory a bit saner.
+    $subdir = $suffix;
+    $subdir =~ s/^\-other\.//;
+    $subdir =~ s/^\-phix\.//;
+    $subdir =~ s/^\-//;
+    $subdir =~ s/\.gz//;
+    $subdir =~ s/\.fq//;
+    $subdir =~ s/\./_/g;
+  }
+
+  if($subdir ne '') { return $subdir . '/'; }
+  else { return ''; }
+
+}
+
+
