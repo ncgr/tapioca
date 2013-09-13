@@ -64,11 +64,13 @@ for other options, e.g. --use-bases-mask  etc.
 
 ```bash
 cd Unaligned
-make
+make 
+# or make -j [cores]
 ```
-* configure Tapioca after Casava finishes. Like Casava, Tapioca uses Make for dependency tracking
-and job parallelism. Run the tap_configure_postprocessing script. The last parameter is the
-Unaligned directory created by Casava 1.8.
+* After Casava make finishes then configure Tapioca by running tap_configure_postprocessing. 
+The last parameter is the Unaligned directory created by Casava 1.8. 
+Like Casava, Tapioca uses Make for dependency tracking and job parallelism, so a makefile is the output
+of the configuration script.
 
 ```bash
 tap_configure_postprocessing \
@@ -79,24 +81,25 @@ tap_configure_postprocessing \
  --deployed /your/deployed/dir \
  ./Unaligned
 ```
-the makefile was created.
-* First run the precheck target; it does some sanity checking on the casava run
+
+* Now the makefile was created. First run the precheck target; it does some sanity checking on the casava run
 and will output some warnings if it notices anything wrong off the bat.
 
 ```bash
 make precheck
 ```
-* making the 'all' target will perform the contaminant filtering and summary
+* Making the 'all' target will perform the contaminant filtering and summary
 reporting. Technically it is not 'all' because the deploy step is a separate
 target.
 
 ```bash
-make -j 16 all
+make all
+# or make -j [cores] all
 ```
-The -j 16 will use 16 cores. Alternately, the qmake script could be submitted to
+make -j 16 will use 16 cores. Alternately, the qmake script could be submitted to
 a SGE cluster if more parallelism is required. Qmake job submission has not been tested.
-Now check results as necessary, in the various ./Project directories.
-* Run make deploy when ready
+
+* Now check results as necessary, in the various ./Project directories. Run make deploy when ready
 
 ```bash
 make deploy
@@ -108,8 +111,7 @@ perform additional processing after the deploy is finished.
 Output
 ---
 Look in the Deployed directory. It should be pretty self explanatory how things are organized by 
-subdirectory. Sorry this is not better documented
-
+subdirectory. Sorry this is not better documented.
 
 Cleanup
 ---
